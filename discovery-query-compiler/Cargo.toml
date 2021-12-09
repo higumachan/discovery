@@ -1,0 +1,10 @@
+[package]
+name = "discovery-query-compiler"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+apollo-parser = "0.1.0"
+apollo-encoder = "0.1.0"
