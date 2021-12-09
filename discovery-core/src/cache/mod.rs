@@ -250,7 +250,12 @@ fn normalize_data<C: Cache>(
                 normalized_data_list.push((key.clone(), normalized_obj));
                 json!({ REF: key })
             } else {
-                value.clone()
+                obj.iter()
+                    .filter_map(|(k, v)| {
+                        (!k.starts_with("__"))
+                            .then(|| (k, normalize_data::<C>(v, normalized_data_list)))
+                    })
+                    .collect()
             }
         }
         JsonValue::Array(arr) => arr
@@ -264,14 +269,17 @@ fn normalize_data<C: Cache>(
 fn denormalize_data<C: Cache>(value: &JsonValue, cache: &C) -> Result<JsonValue, CacheError> {
     match value {
         JsonValue::Object(obj) => {
-            let key: Key = serde_json::from_value(
-                obj.get(REF)
-                    .ok_or_else(|| CacheError::ExpectHasReference(value.clone()))?
-                    .clone(),
-            )
-            .map_err(|_| CacheError::ExpectHasReference(value.clone()))?;
-            let data = cache.get_identity_data(&key)?;
-            Ok(data.0)
+            if let Some(reference) = obj.get(REF) {
+                let key: Key = serde_json::from_value(reference.clone())
+                    .map_err(|_| CacheError::ExpectHasReference(value.clone()))?;
+                let data = cache.get_identity_data(&key)?;
+                Ok(data.0)
+            } else {
+                obj.iter()
+                    .map(|(k, v)| Ok((k.clone(), denormalize_data::<C>(v, cache)?)))
+                    .collect::<Result<Map<String, Value>, CacheError>>()
+                    .map(JsonValue::Object)
+            }
         }
         JsonValue::Array(arr) => {
             let ar = arr
@@ -315,7 +323,7 @@ impl Data {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum NormalizedData {
     Object(Map<String, JsonValue>),
     Array(Vec<JsonValue>),
@@ -337,146 +345,189 @@ impl TryFrom<JsonValue> for NormalizedData {
 mod tests {
     use super::*;
 
-    fn test_data1() -> Data {
-        Data::new(json!({
-          "person": {
-            "__typename": "Person",
-            "id": "cGVvcGxlOjE=",
-            "name": "Luke Skywalker",
-            "homeworld": {
-              "__typename": "Planet",
-              "id": "cGxhbmV0czox",
-              "name": "Tatooine"
-            }
-          }
-        }))
-        .unwrap()
-    }
-
-    fn test_data2() -> Data {
-        Data::new(json!([
-            {
-            "__typename": "Person",
-            "id": "cGVvcGxlOjE=",
-            "name": "Luke Skywalker",
-            "homeworld": {
-              "__typename": "Planet",
-              "id": "cGxhbmV0czox",
-              "name": "Tatooine"
-          }
-        },
-            {
-            "__typename": "Person",
-            "id": "aaabbb",
-            "name": "Jedi",
-            "homeworld": {
-              "__typename": "Planet",
-              "id": "cGxhbmV0czox",
-              "name": "Tatooine"
-          }
-        },
-        ]))
-        .unwrap()
-    }
-
-    fn test_data3() -> Data {
-        Data::new(json!({
-          "person": {
-            "__typename": "Person",
-            "id": "cGVvcGxlOjE=",
-            "name": "Luke Skywalker",
-            "homeworlds": [{
-              "__typename": "Planet",
-              "id": "cGxhbmV0czox",
-              "name": "Tatooine"
-            },
-                    {
-              "__typename": "Planet",
-              "id": "AAA",
-              "name": "Tatooine2"
-            }
-            ]
-          }
-        }))
-        .unwrap()
-    }
-
-    fn test_data4() -> Data {
-        Data::new(json!({
-                "allPeople": {
-          "edges": [
-            {
-              "node": {
+    fn test_data1() -> (Data, NormalizedData) {
+        (
+            Data::new(json!({
+              "person": {
+                "__typename": "Person",
                 "id": "cGVvcGxlOjE=",
-                "__typename": "Person",
-                "name": "Luke Skywalker"
+                "name": "Luke Skywalker",
+                "homeworld": {
+                  "__typename": "Planet",
+                  "id": "cGxhbmV0czox",
+                  "name": "Tatooine"
+                }
               }
-            },
-            {
-              "node": {
-                "id": "cGVvcGxlOjI=",
-                "__typename": "Person",
-                "name": "C-3PO"
-              }
-            },
-            {
-              "node": {
-                "id": "cGVvcGxlOjM=",
-                "__typename": "Person",
-                "name": "R2-D2"
-              }
-            },
-            {
-              "node": {
-                "id": "cGVvcGxlOjQ=",
-                "__typename": "Person",
-                "name": "Darth Vader"
-              }
-            },
-            {
-              "node": {
-                "id": "cGVvcGxlOjU=",
-                "__typename": "Person",
-                "name": "Leia Organa"
-              }
-            },
-            {
-              "node": {
-                "id": "cGVvcGxlOjY=",
-                "__typename": "Person",
-                "name": "Owen Lars"
-              }
-            },
-            {
-              "node": {
-                "id": "cGVvcGxlOjc=",
-                "__typename": "Person",
-                "name": "Beru Whitesun lars"
-              }
-            },
-          ]
-        }
             }))
-        .unwrap()
+            .unwrap(),
+            NormalizedData::Object(
+                json!({
+                   "person": {
+                    "__ref": "Person:cGVvcGxlOjE=",
+                  }
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            ),
+        )
+    }
+
+    fn test_data2() -> (Data, NormalizedData) {
+        (
+            Data::new(json!([
+                {
+                "__typename": "Person",
+                "id": "cGVvcGxlOjE=",
+                "name": "Luke Skywalker",
+                "homeworld": {
+                  "__typename": "Planet",
+                  "id": "cGxhbmV0czox",
+                  "name": "Tatooine"
+              }
+            },
+                {
+                "__typename": "Person",
+                "id": "aaabbb",
+                "name": "Jedi",
+                "homeworld": {
+                  "__typename": "Planet",
+                  "id": "cGxhbmV0czox",
+                  "name": "Tatooine"
+              }
+            },
+            ]))
+            .unwrap(),
+            NormalizedData::Array(
+                json!([
+                    {
+                        "__ref": "Person:cGVvcGxlOjE=",
+                    },
+                    {
+                        "__ref": "Person:aaabbb",
+                    },
+                ])
+                .as_array()
+                .unwrap()
+                .to_vec(),
+            ),
+        )
+    }
+
+    fn test_data3() -> (Data, NormalizedData) {
+        (
+            Data::new(json!({
+              "person": {
+                "__typename": "Person",
+                "id": "cGVvcGxlOjE=",
+                "name": "Luke Skywalker",
+                "homeworlds": [{
+                  "__typename": "Planet",
+                  "id": "cGxhbmV0czox",
+                  "name": "Tatooine"
+                },
+                        {
+                  "__typename": "Planet",
+                  "id": "AAA",
+                  "name": "Tatooine2"
+                }
+                ]
+              }
+            }))
+            .unwrap(),
+            NormalizedData::Object(
+                json!({
+                   "person": {
+                    "__ref": "Person:cGVvcGxlOjE=",
+                  }
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            ),
+        )
+    }
+
+    fn test_data4() -> (Data, NormalizedData) {
+        (
+            Data::new(json!({
+                    "allPeople": {
+              "edges": [
+                {
+                  "node": {
+                    "id": "cGVvcGxlOjE=",
+                    "__typename": "Person",
+                    "name": "Luke Skywalker"
+                  }
+                },
+                {
+                  "node": {
+                    "id": "cGVvcGxlOjI=",
+                    "__typename": "Person",
+                    "name": "C-3PO"
+                  }
+                },
+                {
+                  "node": {
+                    "id": "cGVvcGxlOjM=",
+                    "__typename": "Person",
+                    "name": "R2-D2"
+                  }
+                },
+              ]
+            }
+                }))
+            .unwrap(),
+            NormalizedData::Object(
+                json!({
+                        "allPeople": {
+                  "edges": [
+                    {
+                      "node": {
+                        "__ref": "Person:cGVvcGxlOjE=",
+                      }
+                    },
+                    {
+                      "node": {
+                        "__ref": "Person:cGVvcGxlOjI=",
+                      }
+                    },
+                    {
+                      "node": {
+                        "__ref": "Person:cGVvcGxlOjM=",
+                      }
+                    },
+                  ]
+                }
+                    })
+                .as_object()
+                .unwrap()
+                .clone(),
+            ),
+        )
     }
 
     #[rstest]
     #[case(test_data1(), 2)]
     #[case(test_data2(), 3)]
     #[case(test_data3(), 3)]
-    #[case(test_data4(), 7)]
-    fn normalize(#[case] data: Data, #[case] num_identity_entry: usize) {
+    #[case(test_data4(), 3)]
+    fn normalize(#[case] data: (Data, NormalizedData), #[case] num_identity_entry: usize) {
+        let (data, expect_normalized_data) = data;
         let mut cache = InMemoryCache::new();
 
         let normalized = cache.store_result_data(&"test".to_string(), data).unwrap();
         assert_eq!(cache.identity_cache.len(), num_identity_entry);
+        assert_eq!(normalized, expect_normalized_data)
     }
 
     #[rstest]
     #[case(test_data1())]
     #[case(test_data2())]
     #[case(test_data3())]
-    fn normalize_and_denormalize(#[case] data: Data) {
+    #[case(test_data4())]
+    fn normalize_and_denormalize(#[case] data: (Data, NormalizedData)) {
+        let (data, normalized_data) = data;
         let mut cache = InMemoryCache::new();
 
         let normalized = cache
@@ -491,7 +542,9 @@ mod tests {
     #[case(test_data1())]
     #[case(test_data2())]
     #[case(test_data3())]
-    fn normalize_and_denormalize_identity_cache_miss(#[case] data: Data) {
+    #[case(test_data4())]
+    fn normalize_and_denormalize_identity_cache_miss(#[case] data: (Data, NormalizedData)) {
+        let (data, normalized_data) = data;
         let mut cache = InMemoryCache::new();
 
         let normalized = cache
@@ -502,14 +555,20 @@ mod tests {
 
         let result = cache.get_result_data(&"test".to_string());
 
-        assert!(matches!(result, Err(CacheError::KeyNotFound(_))));
+        assert!(
+            matches!(result, Err(CacheError::KeyNotFound(_))),
+            "{:?}",
+            &result
+        );
     }
 
     #[rstest]
     #[case(test_data1())]
     #[case(test_data2())]
     #[case(test_data3())]
-    fn normalize_and_denormalize_result_cache_miss(#[case] data: Data) {
+    #[case(test_data4())]
+    fn normalize_and_denormalize_result_cache_miss(#[case] data: (Data, NormalizedData)) {
+        let (data, normalized_data) = data;
         let mut cache = InMemoryCache::new();
 
         let normalized = cache
