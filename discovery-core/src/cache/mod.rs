@@ -183,7 +183,7 @@ trait HasKeyData {
 #[derive(Error, Debug)]
 pub enum DataValidationError {
     #[error("not has __typename")]
-    NotHasTypename(String, JsonValue),
+    NotHasTypenameWhenHasId(String, JsonValue),
     #[error("typename is string")]
     TypeNameIsNotString(String, JsonValue),
     #[error("InvalidJsonType")]
@@ -196,16 +196,22 @@ pub struct Data(JsonValue);
 fn validate_data(path: &str, value: &JsonValue) -> Result<(), DataValidationError> {
     match value {
         JsonValue::Object(obj) => {
-            let _ = obj
-                .get(TYPENAME)
-                .ok_or_else(|| {
-                    DataValidationError::NotHasTypename(path.to_string(), value.clone())
-                })?
-                .as_str()
-                .ok_or_else(|| {
-                    DataValidationError::TypeNameIsNotString(path.to_string(), value.clone())
-                })?
-                .to_string();
+            if let Some(_) = obj.get(Key::field_name()) {
+                let _ = obj
+                    .get(TYPENAME)
+                    .ok_or_else(|| {
+                        DataValidationError::NotHasTypenameWhenHasId(
+                            path.to_string(),
+                            value.clone(),
+                        )
+                    })?
+                    .as_str()
+                    .ok_or_else(|| {
+                        DataValidationError::TypeNameIsNotString(path.to_string(), value.clone())
+                    })?
+                    .to_string();
+            }
+
             for (k, v) in obj {
                 if !k.starts_with("__") {
                     validate_data(format!("{} > {}", path, k).as_str(), v)?;
@@ -235,15 +241,17 @@ fn normalize_data<C: Cache>(
                         .then(|| (k.to_string(), normalize_data::<C>(v, normalized_data_list)))
                 })
                 .collect::<JsonValue>();
-            let typename = obj.get(TYPENAME).unwrap().as_str().unwrap();
-            let id = normalized_obj
+            if let Some(id) = normalized_obj
                 .get(Key::field_name())
-                .unwrap()
-                .as_str()
-                .unwrap();
-            let key = Key(typename.to_string(), id.to_string());
-            normalized_data_list.push((key.clone(), normalized_obj));
-            json!({ REF: key })
+                .map(|x| x.as_str().unwrap())
+            {
+                let typename = obj.get(TYPENAME).unwrap().as_str().unwrap();
+                let key = Key(typename.to_string(), id.to_string());
+                normalized_data_list.push((key.clone(), normalized_obj));
+                json!({ REF: key })
+            } else {
+                value.clone()
+            }
         }
         JsonValue::Array(arr) => arr
             .iter()
@@ -393,10 +401,70 @@ mod tests {
         .unwrap()
     }
 
+    fn test_data4() -> Data {
+        Data::new(json!({
+                "allPeople": {
+          "edges": [
+            {
+              "node": {
+                "id": "cGVvcGxlOjE=",
+                "__typename": "Person",
+                "name": "Luke Skywalker"
+              }
+            },
+            {
+              "node": {
+                "id": "cGVvcGxlOjI=",
+                "__typename": "Person",
+                "name": "C-3PO"
+              }
+            },
+            {
+              "node": {
+                "id": "cGVvcGxlOjM=",
+                "__typename": "Person",
+                "name": "R2-D2"
+              }
+            },
+            {
+              "node": {
+                "id": "cGVvcGxlOjQ=",
+                "__typename": "Person",
+                "name": "Darth Vader"
+              }
+            },
+            {
+              "node": {
+                "id": "cGVvcGxlOjU=",
+                "__typename": "Person",
+                "name": "Leia Organa"
+              }
+            },
+            {
+              "node": {
+                "id": "cGVvcGxlOjY=",
+                "__typename": "Person",
+                "name": "Owen Lars"
+              }
+            },
+            {
+              "node": {
+                "id": "cGVvcGxlOjc=",
+                "__typename": "Person",
+                "name": "Beru Whitesun lars"
+              }
+            },
+          ]
+        }
+            }))
+        .unwrap()
+    }
+
     #[rstest]
     #[case(test_data1(), 2)]
     #[case(test_data2(), 3)]
     #[case(test_data3(), 3)]
+    #[case(test_data4(), 7)]
     fn normalize(#[case] data: Data, #[case] num_identity_entry: usize) {
         let mut cache = InMemoryCache::new();
 
